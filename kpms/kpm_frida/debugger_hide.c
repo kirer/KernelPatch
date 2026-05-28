@@ -18,14 +18,28 @@ static void *do_task_stat_fn = 0;
 
 /* /proc/[pid]/status -> TracerPid: 0 */
 static void before_seq_put_decimal_ull(hook_fargs3_t *args, void *udata) {
-    if (strcmp((char *)args->arg1, "\nTracerPid:\t") == 0 && args->arg2 != 0) {
+    const char *s = (const char *)args->arg1;
+
+    (void)udata;
+
+    if (!s)
+        return;
+
+    if (strcmp(s, "\nTracerPid:\t") == 0 && args->arg2 != 0) {
         args->arg2 = 0;
     }
 }
 
 /* /proc/[pid]/status -> S (sleeping) instead of t (tracing stop) */
 static void before_seq_puts(hook_fargs2_t *args, void *udata) {
-    if (strcmp((char *)args->arg1, "t (tracing stop)") == 0) {
+    const char *s = (const char *)args->arg1;
+
+    (void)udata;
+
+    if (!s)
+        return;
+
+    if (strcmp(s, "t (tracing stop)") == 0) {
         args->arg1 = (uint64_t)"S (sleeping)";
     }
 }
@@ -33,24 +47,32 @@ static void before_seq_puts(hook_fargs2_t *args, void *udata) {
 /* /proc/[pid]/wchan -> 0 instead of ptrace_stop */
 static void after_proc_pid_wchan(hook_fargs4_t *args, void *udata) {
     struct seq_file *m = (struct seq_file *)args->arg0;
-    if (m && m->buf) {
-        if (strcmp((char *)m->buf, "ptrace_stop") == 0) {
-            m->buf[0] = '0';
-            m->buf[1] = '\0';
-            m->count = 1;
-        }
+
+    (void)udata;
+
+    if (!m || !m->buf || m->count < 2)
+        return;
+
+    if (strncmp((char *)m->buf, "ptrace_stop", m->count) == 0) {
+        m->buf[0] = '0';
+        m->buf[1] = '\0';
+        m->count = 1;
     }
 }
 
 static void after_do_task_stat(hook_fargs5_t *args, void *udata) {
     struct seq_file *m = (struct seq_file *)args->arg0;
-    if (m && m->buf) {
-        for (size_t i = 0; i + 2 < m->count; i++) {
-            if (m->buf[i] == ')' && m->buf[i + 1] == ' ') {
-                if (m->buf[i + 2] == 't')
-                    m->buf[i + 2] = 'S';
-                break;
-            }
+
+    (void)udata;
+
+    if (!m || !m->buf)
+        return;
+
+    for (size_t i = 0; i + 2 < m->count; i++) {
+        if (m->buf[i] == ')' && m->buf[i + 1] == ' ') {
+            if (m->buf[i + 2] == 't')
+                m->buf[i + 2] = 'S';
+            break;
         }
     }
 }

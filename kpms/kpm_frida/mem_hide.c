@@ -10,6 +10,12 @@ static void *access_remote_vm_fn = 0;
 
 #define FOLL_WRITE 0x01
 
+/*
+ * 限制最大扫描缓冲区大小，防止内核态长时间占用 CPU
+ * 64KB 足够覆盖 /proc/pid/mem 的单次大块读取
+ */
+#define MAX_SCRUB_LEN (64 * 1024)
+
 static const char *mem_sigs[] = {
     "LIBFRIDA",
     "frida-agent",
@@ -33,14 +39,20 @@ static void __attribute__((optimize("O0"))) zero_bytes(volatile char *buf, int l
 
 static void scrub_frida_signatures(char *buf, int len)
 {
+    int scan_len = len;
+
+    /* clamp to avoid soft lockup on huge reads */
+    if (scan_len > MAX_SCRUB_LEN)
+        scan_len = MAX_SCRUB_LEN;
+
     for (int s = 0; s < (int)NUM_SIGS; s++) {
         const char *sig = mem_sigs[s];
         int sig_len = (int)strlen(sig);
 
-        if (sig_len > len)
+        if (!sig || sig_len == 0 || sig_len > scan_len)
             continue;
 
-        for (int i = 0; i <= len - sig_len; i++) {
+        for (int i = 0; i <= scan_len - sig_len; i++) {
             if (memcmp(buf + i, sig, sig_len) == 0) {
                 zero_bytes((volatile char *)(buf + i), sig_len);
                 i += sig_len - 1;
@@ -57,10 +69,20 @@ static void after_access_remote_vm(hook_fargs5_t *args, void *udata)
 
     (void)udata;
 
+    /* skip write path */
     if (gup_flags & FOLL_WRITE)
         return;
+
+    /* check return value - don't process if read failed */
+    if (args->ret <= 0)
+        return;
+
     if (!buf || len <= 0)
         return;
+
+    /* only scrub up to the actual bytes read */
+    if (args->ret < (unsigned long)len)
+        len = (int)args->ret;
 
     scrub_frida_signatures(buf, len);
 }

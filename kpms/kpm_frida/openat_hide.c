@@ -1,5 +1,5 @@
 /*
- * openat_hide.c - block obvious Frida file probes
+ * openat_hide.c - block Frida file probes via openat, faccessat, fstatat
  */
 
 #include "openat_hide.h"
@@ -16,8 +16,12 @@
 
 #include "common.h"
 
+/* arm64 fstatat = 79, covers stat/lstat/fstatat */
+#define FSTATAT_NR 79
+
 static int hook_openat_status = 0;
 static int hook_faccessat_status = 0;
+static int hook_fstatat_status = 0;
 
 static int is_hidden_path(const char *path)
 {
@@ -44,50 +48,51 @@ static int is_hidden_path(const char *path)
     return 0;
 }
 
-static void before_openat(hook_fargs4_t *args, void *udata)
+static int block_if_hidden(const char __user *filename, const char *syscall_name)
 {
-    const char __user *filename = (const char __user *)syscall_argn(args, 1);
     char buf[256];
     long len;
 
-    (void)udata;
-
     if (!filename)
-        return;
+        return 0;
 
     len = compat_strncpy_from_user(buf, filename, sizeof(buf));
     if (len <= 0)
-        return;
+        return 0;
 
     if (is_hidden_path(buf)) {
-        pr_info("KPM_FRIDA: openat BLOCKED: %s\n", buf);
+        pr_info("KPM_FRIDA: %s BLOCKED: %s\n", syscall_name, buf);
+        return 1;
+    }
+
+    return 0;
+}
+
+static void before_openat(hook_fargs4_t *args, void *udata)
+{
+    (void)udata;
+
+    if (block_if_hidden((const char __user *)syscall_argn(args, 1), "openat")) {
         args->ret = -2;
         args->skip_origin = 1;
     }
 }
 
-/*
- * arm64 __NR_faccessat is the 3-argument syscall:
- *   faccessat(dfd, filename, mode)
- * The 4-argument variant is __NR_faccessat2.
- */
 static void before_faccessat(hook_fargs3_t *args, void *udata)
 {
-    const char __user *filename = (const char __user *)syscall_argn(args, 1);
-    char buf[256];
-    long len;
-
     (void)udata;
 
-    if (!filename)
-        return;
+    if (block_if_hidden((const char __user *)syscall_argn(args, 1), "faccessat")) {
+        args->ret = -2;
+        args->skip_origin = 1;
+    }
+}
 
-    len = compat_strncpy_from_user(buf, filename, sizeof(buf));
-    if (len <= 0)
-        return;
+static void before_fstatat(hook_fargs4_t *args, void *udata)
+{
+    (void)udata;
 
-    if (is_hidden_path(buf)) {
-        pr_info("KPM_FRIDA: faccessat BLOCKED: %s\n", buf);
+    if (block_if_hidden((const char __user *)syscall_argn(args, 1), "fstatat")) {
         args->ret = -2;
         args->skip_origin = 1;
     }
@@ -111,7 +116,14 @@ void frida_openat_hide_install(void)
         hook_faccessat_status = 1;
     }
 
-    pr_info("KPM_FRIDA: openat hide installed\n");
+    err = fp_hook_syscalln(FSTATAT_NR, 4, before_fstatat, NULL, NULL);
+    if (err) {
+        pr_err("KPM_FRIDA: hook fstatat failed %d\n", err);
+    } else {
+        hook_fstatat_status = 1;
+    }
+
+    pr_info("KPM_FRIDA: openat hide installed (openat/faccessat/fstatat)\n");
 }
 
 void frida_openat_hide_uninstall(void)
@@ -124,6 +136,11 @@ void frida_openat_hide_uninstall(void)
     if (hook_faccessat_status) {
         fp_unhook_syscalln(__NR_faccessat, before_faccessat, NULL);
         hook_faccessat_status = 0;
+    }
+
+    if (hook_fstatat_status) {
+        fp_unhook_syscalln(FSTATAT_NR, before_fstatat, NULL);
+        hook_fstatat_status = 0;
     }
 
     pr_info("KPM_FRIDA: openat hide uninstalled\n");

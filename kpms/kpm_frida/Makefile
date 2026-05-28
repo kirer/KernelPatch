@@ -1,5 +1,16 @@
 ifndef TARGET_COMPILE
-    $(error TARGET_COMPILE not set)
+    $(info TARGET_COMPILE not set, trying auto-detection...)
+    TARGET_COMPILE := $(shell \
+        for pfx in aarch64-none-elf- aarch64-elf-; do \
+            if command -v $${pfx}gcc >/dev/null 2>&1; then \
+                echo "$${pfx}"; exit 0; \
+            fi; \
+        done)
+    ifeq ($(TARGET_COMPILE),)
+        $(error TARGET_COMPILE not set and no cross-compiler found (tried aarch64-none-elf-, aarch64-elf-))
+    else
+        $(info Auto-detected TARGET_COMPILE=$(TARGET_COMPILE))
+    endif
 endif
 
 ifndef KP_DIR
@@ -7,10 +18,10 @@ ifndef KP_DIR
 endif
 
 CC = $(TARGET_COMPILE)gcc
-LD = $(TARGET_COMPILE)ld
 
 INCLUDE_DIRS := . include patch/include linux/include linux/arch/arm64/include linux/tools/arch/arm64/include
 INCLUDE_FLAGS := $(foreach dir,$(INCLUDE_DIRS),-I$(KP_DIR)/kernel/$(dir))
+INCLUDE_FLAGS += -I.
 
 CFLAGS += -std=gnu11 -O2
 
