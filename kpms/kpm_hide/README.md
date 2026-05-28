@@ -88,10 +88,12 @@
 
 ## 构建要求
 
-该 KPM 需要 AArch64 bare-metal GCC 工具链，`Makefile` 通过 `TARGET_COMPILE` 前缀调用编译器：
+该 KPM 需要 AArch64 bare-metal GCC 工具链，`Makefile` 通过 `TARGET_COMPILE` 前缀调用编译器。
 
-- `aarch64-none-elf-gcc`
-- `aarch64-none-elf-ld`
+可选工具链：
+
+- **ARM 官方工具链**：`aarch64-none-elf-gcc` / `aarch64-none-elf-ld`
+- **Homebrew (macOS)**：`aarch64-elf-gcc` / `aarch64-elf-ld`
 
 项目根目录默认按模块目录的 `../..` 推导，也可以通过 `KP_DIR` 显式指定。
 
@@ -121,7 +123,11 @@ make TARGET_COMPILE=aarch64-none-elf- KP_DIR=E:/KPM/KernelPatch clean all
 
 ## macOS 编译
 
-Apple Silicon 示例：
+### 方式一：ARM 官方工具链
+
+从 [Arm GNU Toolchain](https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads) 下载 macOS 版本。
+
+Apple Silicon：
 
 ```bash
 export PATH="/opt/arm-gnu-toolchain-15.2.rel1-darwin-arm64-aarch64-none-elf/bin:$PATH"
@@ -129,12 +135,20 @@ cd ~/KernelPatch/kpms/kpm_hide
 make TARGET_COMPILE=aarch64-none-elf- clean all
 ```
 
-Intel Mac 示例：
+Intel Mac：
 
 ```bash
 export PATH="/opt/arm-gnu-toolchain-15.2.rel1-darwin-x86_64-aarch64-none-elf/bin:$PATH"
 cd ~/KernelPatch/kpms/kpm_hide
 make TARGET_COMPILE=aarch64-none-elf- KP_DIR="$HOME/KernelPatch" clean all
+```
+
+### 方式二：Homebrew
+
+```bash
+brew install aarch64-elf-gcc
+cd ~/KernelPatch/kpms/kpm_hide
+make TARGET_COMPILE=aarch64-elf- clean all
 ```
 
 成功后会生成：
@@ -146,7 +160,7 @@ KPM_HIDE.kpm
 清理产物：
 
 ```bash
-make TARGET_COMPILE=aarch64-none-elf- clean
+make TARGET_COMPILE=aarch64-elf- clean
 ```
 
 ## 目录结构
