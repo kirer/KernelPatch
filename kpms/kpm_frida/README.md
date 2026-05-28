@@ -6,28 +6,30 @@
 
 ## 架构概览
 
-KPM_FRIDA 采用**内核态 + 用户态双层防护**架构：
+KPM_FRIDA 的防护思路：**内核态 Hook 隐藏痕迹 + 用户态换端口规避扫描**。
 
 ```
-┌─────────────────────────────────────────────────┐
-│                  用户态 (Userspace)               │
-│  ┌──────────────┐  ┌───────────────────────────┐ │
-│  │  iptables     │  │  frida-server (root)     │ │
-│  │  (UID 白名单) │  │  /data/local/tmp/fo      │ │
-│  └──────┬───────┘  └───────────────────────────┘ │
-│         │                                        │
-│  ─ ─ ─ ─│─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ │
-│         │          内核态 (Kernel)                │
-│  ┌──────┴──────────────────────────────────────┐ │
-│  │  KPM_FRIDA (5 个子模块)                      │ │
-│  │  ├─ debugger_hide  TracerPid/wchan/stat     │ │
-│  │  ├─ frida_hide     maps & 线程名             │ │
-│  │  ├─ openat_hide    openat/faccessat/fstatat  │ │
-│  │  ├─ net_hide       /proc/net/tcp 端口        │ │
-│  │  └─ mem_hide       /proc/pid/mem 签名清理    │ │
-│  └─────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────┐
+│                   用户态 (Userspace)               │
+│  ┌──────────────────────────────────────────────┐ │
+│  │  frida-server (root)     监听 :51742          │ │
+│  │  /data/local/tmp/fo -l 0.0.0.0:51742 -D      │ │
+│  └──────────────────┬───────────────────────────┘ │
+│                     │ adb forward :51742→:51742   │
+│  ─ ─ ─ ─ ─ ─ ─ ─ ─ ┼ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ │
+│                     │   内核态 (Kernel)            │
+│  ┌──────────────────┴───────────────────────────┐ │
+│  │  KPM_FRIDA (5 个子模块)                       │ │
+│  │  ├─ debugger_hide   TracerPid/wchan/stat     │ │
+│  │  ├─ frida_hide      maps & 线程名             │ │
+│  │  ├─ openat_hide     openat/faccessat/fstatat │ │
+│  │  ├─ net_hide        /proc/net/tcp 隐藏端口    │ │
+│  │  └─ mem_hide        /proc/pid/mem 签名清理    │ │
+│  └──────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────┘
 ```
+
+**核心思路**：游戏反作弊只扫描 `27042`/`27043` 等 frida 默认端口。把 frida-server 换到随机高端口（如 `51742`），游戏 `connect(127.0.0.1, 27042)` 直接落空，零 iptables 依赖。
 
 ## 模块信息
 
@@ -42,20 +44,21 @@ KPM_FRIDA 采用**内核态 + 用户态双层防护**架构：
 
 ## 隐藏原理详解
 
-### 反作弊常见检测手段
+### 反作弊常见检测手段与对策
 
 游戏反作弊系统通常通过以下途径检测 Frida/调试器：
 
-| 层级 | 检测方法 | 原理 |
-|------|---------|------|
-| 端口扫描 | `connect(127.0.0.1, 27042)` | 探测 frida-server 默认端口是否在监听 |
-| /proc 文件 | `readlinkat(/proc/self/fd/*)` | 遍历 fd 找 frida 相关路径 |
-| /proc 文件 | `open("/proc/self/maps")` | 读取内存映射找 frida-agent 库 |
-| /proc 文件 | `read("/proc/self/status")` | 检查 TracerPid 是否为 0 |
-| /proc 文件 | `read("/proc/net/tcp")` | 查看端口占用找 frida 端口 |
-| 进程内存 | `read("/proc/self/mem")` | 扫描进程内存找 LIBFRIDA 等签名 |
-| 线程名 | `prctl(PR_GET_NAME)` | 枚举线程名找 gum-js-loop 等 |
-| 库枚举 | `dl_iterate_phdr()` | 遍历已加载 SO 库 |
+| 层级 | 检测方法 | 对策 | 状态 |
+|------|---------|------|------|
+| 端口扫描 | `connect(127.0.0.1, 27042)` | **frida-server 监听随机端口** | ✅ |
+| /proc 文件 | `read("/proc/net/tcp")` | net_hide 隐藏端口行 | ✅ |
+| /proc 文件 | `open("/proc/self/maps")` | frida_hide 隐藏映射行 | ✅ |
+| /proc 文件 | `read("/proc/self/status")` | debugger_hide TracerPid→0 | ✅ |
+| 进程内存 | `read("/proc/self/mem")` | mem_hide 清理签名 | ✅ |
+| 线程名 | `prctl(PR_GET_NAME)` | frida_hide 伪装为 binder | ✅ |
+| 文件探测 | `stat/openat` frida 路径 | openat_hide 返回 ENOENT | ✅ |
+| 库枚举 | `dl_iterate_phdr()` | 无法内核拦截 | ⚠️ |
+| fd 扫描 | `readlinkat(/proc/self/fd/*)` | hook 会导致内核 panic | ❌ |
 
 ### 各模块防护逻辑
 
@@ -108,17 +111,13 @@ KPM_FRIDA 采用**内核态 + 用户态双层防护**架构：
 - 显式放行 `/memfd:` 路径，避免误伤 Android 运行时基于 memfd 的内存操作
 - 仅 hook syscall 入口，不涉及文件系统层，对正常 I/O 零影响
 
-#### 4. net_hide — 隐藏端口 + iptables 阻断连接
+#### 4. net_hide — 隐藏 /proc/net/tcp 中的 frida 端口
 
 **文件**：`net_hide.c`
 
-本模块采用**两重防护**：
-
-**A. 内核态：隐藏 `/proc/net/tcp` 和 `/proc/net/tcp6` 中的端口行**
-
 **Hook 点**：`tcp4_seq_ops->show` / `tcp6_seq_ops->show`
 
-通过 `fp_hook` 替换 seq_operations 的 show 函数指针，先调用原始函数，然后检查输出中是否包含 frida 端口的十六进制表示：
+通过 `fp_hook` 替换 `seq_operations` 的 `show` 函数指针，先调用原始函数，然后检查输出中是否包含 frida 端口的十六进制表示，命中则回退 `m->count` 移除该行：
 
 | 端口 | 十六进制 (网络字节序) | 用途 |
 |------|----------------------|------|
@@ -127,22 +126,7 @@ KPM_FRIDA 采用**内核态 + 用户态双层防护**架构：
 | 23946 | `:5D8A` | frida cluster 端口 |
 | 31415 | `:7AB7` | frida-gadget 默认端口 |
 
-命中则回退 `m->count` 移除该行。
-
-**B. 用户态：iptables UID 白名单阻断端口连接**
-
-由于此内核（5.10.101）的 `__arm64_sys_connect` 未在 kallsyms 中导出，无法在内核态 hook connect 系统调用。因此改用 iptables 在用户态阻断检测：
-
-```bash
-# root/system 进程 (UID 0-9999) — 放行（frida-server 自身通信）
-iptables -A OUTPUT -p tcp --dport 27042 -m owner --uid-owner 0-9999 -j ACCEPT
-# 其他进程 (普通 APP) — 拒绝（游戏无法端口扫描）
-iptables -A OUTPUT -p tcp --dport 27042 -j REJECT --reject-with tcp-reset
-```
-
-**为什么需要 iptables**：内核态 net_hide 只能隐藏 `/proc/net/tcp` 中的显示，但无法阻止游戏直接调用 `connect()` 探测端口是否可达。iptables 在 netfilter 层面直接 REJECT 非 root 进程的连接请求，游戏 `connect()` 会立即收到 `ECONNREFUSED`，相当于端口不存在。
-
-**为什么用 UID 白名单而非全部阻断**：`frida -U -f` 的工作流程中，frida-server 自身也需要与 frida-agent 通信（通过 127.0.0.1:27042）。如果全部阻断，`frida -U -f` 将无法完成注入。UID 白名单只放行 root/system，游戏进程 (u0_aXXX) 仍被拦截。
+> **注意**：`connect()` syscall hook 无法实现（`__arm64_sys_connect` 未在 kallsyms 导出）。但通过 **随机端口** 策略已完美规避——端口扫描只针对默认端口，换端口后全部落空。
 
 #### 5. mem_hide — 清理 /proc/pid/mem 中的 Frida 签名
 
@@ -163,6 +147,33 @@ iptables -A OUTPUT -p tcp --dport 27042 -j REJECT --reject-with tcp-reset
 - 扫描上限 64KB（`MAX_SCRUB_LEN`），防止大块读取导致 CPU 软锁定
 - 仅清理实际读取字节数内的数据（`args->ret` 为实际读取长度）
 
+## 随机端口方案 — 规避端口扫描
+
+游戏反作弊最常见的检测是 `connect(127.0.0.1, 27042)` 扫描 frida 默认端口。最优雅的对策不是 iptables 拦截，而是**压根不监听默认端口**。
+
+```bash
+# 启动 frida-server 在随机高端口
+su -c /data/local/tmp/fo -l 0.0.0.0:51742 -D
+
+# 建立端口转发
+adb forward tcp:51742 tcp:51742
+
+# 通过转发端口连接
+frida -H 127.0.0.1:51742 -f com.garena.game.kgtw
+```
+
+对比 iptables 方案的优势：
+
+| 方面 | iptables | 随机端口 |
+|------|---------|---------|
+| 持久化 | 重启丢失，需脚本重新执行 | 启动命令即生效 |
+| 副作用 | 清空 OUTPUT 链，影响其他规则 | 无 |
+| 依赖 | 需要 netfilter 模块 | 无额外依赖 |
+| 隐蔽性 | 端口不可达但 iptables 规则可见 | 默认端口压根无监听 |
+| 简洁度 | 需要维护脚本 | 一行命令 |
+
+`net_hide` 模块同时将新端口从 `/proc/net/tcp` 中隐藏，防止通过 `/proc` 枚举发现。
+
 ## 已知不可 hook 的检测点
 
 以下检测方法无法在内核态拦截，或 hook 会导致严重风险：
@@ -172,7 +183,7 @@ iptables -A OUTPUT -p tcp --dport 27042 -j REJECT --reject-with tcp-reset
 | `readlinkat(/proc/self/fd/*)` | 🔴 内核 panic | hook readlinkat/statx 会导致手机死机重启 |
 | `prctl(PR_GET_NAME)` 内核 hook | 🔴 内核 panic | 会导致手机卡死，已从模块中移除 (`prctl_hide.c`) |
 | `dl_iterate_phdr()` | ⚠️ 无法内核拦截 | 纯用户态函数，无 syscall 调用 |
-| `connect()` syscall hook | ⚠️ 无法 hook | `__arm64_sys_connect` 未导出，改用 iptables |
+| `connect()` syscall hook | ⚠️ 无法 hook | `__arm64_sys_connect` 未导出，用随机端口规避 |
 | `strstr()` 扫描内存 | ⚠️ 部分缓解 | mem_hide 可清理 `/proc/mem` 路径，但直接内存读取无法拦截 |
 
 ## 代码结构
@@ -198,30 +209,25 @@ kpms/kpm_frida/
 └── 实战/
     ├── README.md            # 实战分析记录
     ├── detect_trace.js      # frida 反作弊检测追踪脚本
-    └── iptables_frida.sh    # iptables UID 白名单脚本
+    └── iptables_frida.sh    # 遗留的 iptables 方案（已不推荐）
 ```
 
 ## 部署步骤
 
-每次手机重启后需执行以下步骤：
-
 ```bash
-# 1. 推送文件（首次执行）
-adb push 实战/iptables_frida.sh /data/local/tmp/
+# 1. APatch → 加载 KPM_FRIDA.kpm
 
-# 2. APatch → 加载 KPM_FRIDA.kpm
+# 2. 启动 frida-server 在随机端口
+adb shell "su -c '/data/local/tmp/fo -l 0.0.0.0:51742 -D &'"
 
-# 3. 应用 iptables 规则
-adb shell "su -c 'sh /data/local/tmp/iptables_frida.sh'"
+# 3. 建立端口转发
+adb forward tcp:51742 tcp:51742
 
-# 4. 启动 frida-server
-adb shell "su -c '/data/local/tmp/fo -D &'"
-
-# 5. 注入并追踪
-frida -U -f com.garena.game.kgtw -l 实战/detect_trace.js
+# 4. 注入并追踪
+frida -H 127.0.0.1:51742 -f com.garena.game.kgtw -l 实战/detect_trace.js
 ```
 
-> **注意**：iptables 规则在重启后丢失，每次重启都需要重新执行步骤 3。可通过 APatch post-fs-data 脚本自动执行。
+> **端口选择**：避开 `27042`/`27043`/`23946`/`31415` 这些 frida 默认端口即可，任意高端口都行。
 
 ## 实战验证
 
@@ -234,7 +240,8 @@ frida -U -f com.garena.game.kgtw -l 实战/detect_trace.js
 | Root | APatch + Zygisk |
 | 目标 APP | 傳說對決 (com.garena.game.kgtw) |
 | frida-server | v16.7.19, 路径 `/data/local/tmp/fo` |
-| 测试结果 | ✅ 游戏正常运行 78+ 秒，零反作弊检测触发 |
+| 方案 | 随机端口 51742 + KPM 五模块 |
+| 测试结果 | ✅ 游戏正常运行 25+ 秒，零反作弊检测触发 |
 
 `实战/detect_trace.js` 脚本 hook 以下函数追踪反作弊行为：
 
@@ -327,7 +334,7 @@ make push               # 通过 adb 推送到 /sdcard/Download/
 - 该模块目录名是 `kpm_frida`，KPM 实际导出名称是 `KPM_FRIDA`。
 - **不要将 `prctl_hide` 编入模块**，hook `prctl(PR_GET_NAME)` 会导致手机死机。
 - **不要添加 `readlinkat` / `statx` hook**，会导致内核 panic 重启。
-- iptables 规则在重启后丢失，需重新执行或配置 post-fs-data 自动加载。
+- frida-server 端口的十六进制值如果不在 `net_hide` 的已知列表里，`/proc/net/tcp` 不会隐藏（但 `connect()` 扫描已经落空，影响不大）。
 - `push` 目标依赖本机 `adb` 环境。
 - 加载 KPM 模块后再启动 frida-server，否则已存在的 frida 线程/映射不会被隐藏。
 - 所有 hook 都会修改内核暴露给用户态的观测结果，建议先在可恢复测试机上验证。
