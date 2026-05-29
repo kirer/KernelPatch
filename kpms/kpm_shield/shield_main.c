@@ -155,23 +155,24 @@ static void uninstall_hooks(void) {
 /* ========== KPM entry points ========== */
 
 /*
- * Embed mode (boot auto-start): event is non-empty string, kallsyms
- * not ready. Set defaults only, defer hook install to ctl0.
- * Manual load (APatch UI): event is NULL, parse args and install immediately.
+ * Uses kallsyms_lookup_name("printk") to detect if the kernel symbol
+ * subsystem is ready, rather than relying on the ''event'' parameter.
+ * If kallsyms is ready, install hooks immediately regardless of event.
+ * If kallsyms is not ready (boot stage), defer to ctl0.
  */
 static long shield_init(const char *args, const char *event, void *__user reserved) {
     pr_info(TAG ": init, event: %s, args: %s\n",
             event ? event : "(null)", args ? args : "(null)");
 
-    if (event && event[0] != '\0') {
-        /* Boot stage: only set defaults (safe: no kallsyms, no pr_info spam) */
+    if (!kallsyms_lookup_name("printk")) {
+        /* Boot stage: kallsyms not ready, set defaults and defer */
         shield_config_set_defaults();
         pr_info(TAG ": boot stage (%s), deferring hook install\n", event);
         g_installed = 0;
         return 0;
     }
 
-    /* Manual load: parse args and install immediately */
+    /* kallsyms ready: parse args and install immediately */
     shield_config_parse(args);
     return install_hooks();
 }
